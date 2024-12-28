@@ -11,5 +11,12 @@ module.exports = {
         runs: 200
       }
     }
-  }
+  },
+  // networks: {
+  //   sepolia: {
+  //     url: `https://eth-sepolia.g.alchemy.com/v2/your-api-key{get it from alchemy}`,
+  //     accounts: "ENTER YOUR PRIVATE KEy WITH SEPOLIA ETH"
+      
+  //   }
+  // }
 };
