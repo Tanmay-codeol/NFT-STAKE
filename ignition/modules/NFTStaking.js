@@ -23,7 +23,6 @@ async function main() {
   await nftStaking.waitForDeployment();
   console.log("NFTStaking deployed to:", await nftStaking.getAddress());
 }
-
 main()
   .then(() => process.exit(0))
   .catch((error) => {
