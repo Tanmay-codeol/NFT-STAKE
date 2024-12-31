@@ -54,8 +54,8 @@ describe("NFTStaking", function () {
       await userMockNFT.approve(await nftStaking.getAddress(), 1);
       await userStaking.stake(1);
 
-      const stake = await nftStaking.stakes(user1.address, 0);
-      expect(stake.tokenId).to.equal(1);
+      const stakeInfo = await nftStaking.getStakeInfo(1);
+      expect(stakeInfo.owner).to.equal(user1.address);
       expect(await mockNFT.ownerOf(1)).to.equal(await nftStaking.getAddress());
     });
 
@@ -74,7 +74,7 @@ describe("NFTStaking", function () {
       expect(await nftStaking.paused()).to.be.false;
     });
 
-    it("Should restric and not allow staking when contract is paused", async function () {
+    it("Should restrict and not allow staking when contract is paused", async function () {
       const userMockNFT = mockNFT.connect(user1);
       const userStaking = nftStaking.connect(user1);
 
@@ -84,7 +84,7 @@ describe("NFTStaking", function () {
       await expect(userStaking.stake(1)).to.be.reverted;
     });
 
-    it("Should restric and not allow unstaking when contract is paused", async function () {
+    it("Should restrict and not allow unstaking when contract is paused", async function () {
       const userMockNFT = mockNFT.connect(user1);
       const userStaking = nftStaking.connect(user1);
 
@@ -104,11 +104,26 @@ describe("NFTStaking", function () {
       await nftStaking.connect(owner).unpause();
 
       await userStaking.stake(1);
-      const stake = await nftStaking.stakes(user1.address, 0);
-      expect(stake.tokenId).to.equal(1);
+      const stakeInfo = await nftStaking.getStakeInfo(1);
+      expect(stakeInfo.owner).to.equal(user1.address);
 
       await userStaking.unstake(1);
-      expect((await nftStaking.stakes(user1.address, 0)).unbondingStart).to.be.gt(0);
+      const updatedStakeInfo = await nftStaking.getStakeInfo(1);
+      expect(updatedStakeInfo.unbondingStart).to.be.gt(0);
+    });
+  });
+
+  describe("Rewards", function () {
+    it("Should track active stake count correctly", async function () {
+      const userMockNFT = mockNFT.connect(user1);
+      const userStaking = nftStaking.connect(user1);
+
+      await userMockNFT.approve(await nftStaking.getAddress(), 1);
+      await userStaking.stake(1);
+      expect(await nftStaking.activeStakeCount(user1.address)).to.equal(1);
+
+      await userStaking.unstake(1);
+      expect(await nftStaking.activeStakeCount(user1.address)).to.equal(0);
     });
   });
 });

@@ -15,24 +15,31 @@ contract NFTStaking is
     OwnableUpgradeable,
     UUPSUpgradeable
 {
-    IERC721 public nft;
-    uint256 public rewardPerBlock;
-    uint256 public delayPeriod;
-    uint256 public unbondingPeriod;
-
-    struct Stake {
-        uint256 tokenId;
-        uint256 stakedAt;
-        uint256 unbondingStart;
+    struct StakeInfo {
+        address owner; // Owner of the stake
+        uint96 stakedAt; // Block number when staked
+        uint96 unbondingStart; // Block number when unbonding started
     }
 
-    // New variables for optimization
+    IERC721 public nft;
+    uint96 public rewardPerBlock;
+    uint32 public delayPeriod;
+    uint32 public unbondingPeriod;
+
     mapping(address => uint256) public lastRewardCalculation;
     mapping(address => uint256) public accumulatedRewards;
-    mapping(address => uint256) public activeStakeCount;
-
-    mapping(address => Stake[]) public stakes;
+    mapping(address => uint32) public activeStakeCount;
     mapping(address => uint256) public rewards;
+
+    // New mapping to track token stakes directly
+    mapping(uint256 => StakeInfo) public tokenStakes;
+
+    error NotTokenOwner();
+    error TokenNotStaked();
+    error TokenAlreadyStaked();
+    error UnbondingPeriodNotOver();
+    error DelayPeriodNotOver();
+    error TokenNotUnstaking();
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -42,15 +49,15 @@ contract NFTStaking is
     function initialize(
         address initialOwner,
         address nftAddress,
-        uint256 _rewardPerBlock,
-        uint256 _delayPeriod,
-        uint256 _unbondingPeriod
+        uint96 _rewardPerBlock,
+        uint32 _delayPeriod,
+        uint32 _unbondingPeriod
     ) public initializer {
         __ERC20_init("MyToken", "MTK");
         __ERC20Pausable_init();
         __Ownable_init(initialOwner);
         __UUPSUpgradeable_init();
-        _transferOwnership(initialOwner);
+
         nft = IERC721(nftAddress);
         rewardPerBlock = _rewardPerBlock;
         delayPeriod = _delayPeriod;
@@ -58,87 +65,89 @@ contract NFTStaking is
     }
 
     function stake(uint256 tokenId) external whenNotPaused {
-        // Calculate and update accumulated rewards before adding new stake
+        if (tokenStakes[tokenId].owner != address(0))
+            revert TokenAlreadyStaked();
+
         _updateRewards(msg.sender);
 
         nft.transferFrom(msg.sender, address(this), tokenId);
-        stakes[msg.sender].push(Stake(tokenId, block.number, 0));
-        activeStakeCount[msg.sender]++;
+
+        tokenStakes[tokenId] = StakeInfo({
+            owner: msg.sender,
+            stakedAt: uint96(block.number),
+            unbondingStart: 0
+        });
+
+        unchecked {
+            activeStakeCount[msg.sender]++;
+        }
     }
 
     function unstake(uint256 tokenId) external whenNotPaused {
+        StakeInfo storage stakeInfo = tokenStakes[tokenId];
+
+        if (stakeInfo.owner != msg.sender) revert NotTokenOwner();
+        if (stakeInfo.unbondingStart != 0) revert TokenNotStaked();
+
         _updateRewards(msg.sender);
 
-        Stake[] storage userStakes = stakes[msg.sender];
-        for (uint256 i = 0; i < userStakes.length; i++) {
-            if (
-                userStakes[i].tokenId == tokenId &&
-                userStakes[i].unbondingStart == 0
-            ) {
-                userStakes[i].unbondingStart = block.number;
-                activeStakeCount[msg.sender]--;
-                return;
-            }
+        stakeInfo.unbondingStart = uint96(block.number);
+        unchecked {
+            activeStakeCount[msg.sender]--;
         }
-        revert("Token not staked or already unstaking");
     }
 
     function withdraw(uint256 tokenId) external {
-        Stake[] storage userStakes = stakes[msg.sender];
-        for (uint256 i = 0; i < userStakes.length; i++) {
-            if (
-                userStakes[i].tokenId == tokenId &&
-                userStakes[i].unbondingStart > 0
-            ) {
-                require(
-                    block.number >=
-                        userStakes[i].unbondingStart + unbondingPeriod,
-                    "Unbonding period not over"
-                );
-                nft.transferFrom(address(this), msg.sender, tokenId);
-                userStakes[i] = userStakes[userStakes.length - 1];
-                userStakes.pop();
-                return;
-            }
+        StakeInfo storage stakeInfo = tokenStakes[tokenId];
+
+        if (stakeInfo.owner != msg.sender) revert NotTokenOwner();
+        if (stakeInfo.unbondingStart == 0) revert TokenNotUnstaking();
+        if (block.number < stakeInfo.unbondingStart + unbondingPeriod) {
+            revert UnbondingPeriodNotOver();
         }
-        revert("Token not unstaking or already withdrawn");
+
+        nft.transferFrom(address(this), msg.sender, tokenId);
+        delete tokenStakes[tokenId];
     }
 
-    // New internal function to update rewards
     function _updateRewards(address user) internal {
         uint256 lastCalculation = lastRewardCalculation[user];
-        if (lastCalculation > 0 && activeStakeCount[user] > 0) {
-            uint256 blocksPassed = block.number - lastCalculation;
-            accumulatedRewards[user] +=
-                blocksPassed *
-                rewardPerBlock *
-                activeStakeCount[user];
+        uint32 activeStakes = activeStakeCount[user];
+
+        if (lastCalculation > 0 && activeStakes > 0) {
+            unchecked {
+                uint256 blocksPassed = block.number - lastCalculation;
+                accumulatedRewards[user] +=
+                    blocksPassed *
+                    rewardPerBlock *
+                    activeStakes;
+            }
         }
         lastRewardCalculation[user] = block.number;
     }
 
-    // Optimized rewards calculation
     function calculateRewards(address user) internal view returns (uint256) {
         uint256 pendingRewards = accumulatedRewards[user];
+        uint32 activeStakes = activeStakeCount[user];
 
-        // Add the rewarrds from previos calculation
-        if (activeStakeCount[user] > 0) {
-            uint256 blocksSinceLastCalculation = block.number -
-                lastRewardCalculation[user];
-            pendingRewards +=
-                blocksSinceLastCalculation *
-                rewardPerBlock *
-                activeStakeCount[user];
+        if (activeStakes > 0) {
+            unchecked {
+                uint256 blocksSinceLastCalculation = block.number -
+                    lastRewardCalculation[user];
+                pendingRewards +=
+                    blocksSinceLastCalculation *
+                    rewardPerBlock *
+                    activeStakes;
+            }
         }
 
         return pendingRewards;
     }
 
     function claimRewards() external {
-        require(
-            block.number >= rewards[msg.sender] + delayPeriod,
-            "Delay period not over"
-        );
+        if (block.number < rewards[msg.sender] + delayPeriod) {
+            revert DelayPeriodNotOver();
+        }
 
         _updateRewards(msg.sender);
         uint256 reward = accumulatedRewards[msg.sender];
@@ -148,9 +157,18 @@ contract NFTStaking is
         _mint(msg.sender, reward);
     }
 
-    function updateRewardPerBlock(
-        uint256 newRewardPerBlock
-    ) external onlyOwner {
+    function getStakeInfo(
+        uint256 tokenId
+    )
+        external
+        view
+        returns (address owner, uint96 stakedAt, uint96 unbondingStart)
+    {
+        StakeInfo memory info = tokenStakes[tokenId];
+        return (info.owner, info.stakedAt, info.unbondingStart);
+    }
+
+    function updateRewardPerBlock(uint96 newRewardPerBlock) external onlyOwner {
         rewardPerBlock = newRewardPerBlock;
     }
 
