@@ -26,6 +26,11 @@ contract NFTStaking is
         uint256 unbondingStart;
     }
 
+    // New variables for optimization
+    mapping(address => uint256) public lastRewardCalculation;
+    mapping(address => uint256) public accumulatedRewards;
+    mapping(address => uint256) public activeStakeCount;
+
     mapping(address => Stake[]) public stakes;
     mapping(address => uint256) public rewards;
 
@@ -53,11 +58,17 @@ contract NFTStaking is
     }
 
     function stake(uint256 tokenId) external whenNotPaused {
+        // Calculate and update accumulated rewards before adding new stake
+        _updateRewards(msg.sender);
+
         nft.transferFrom(msg.sender, address(this), tokenId);
         stakes[msg.sender].push(Stake(tokenId, block.number, 0));
+        activeStakeCount[msg.sender]++;
     }
 
     function unstake(uint256 tokenId) external whenNotPaused {
+        _updateRewards(msg.sender);
+
         Stake[] storage userStakes = stakes[msg.sender];
         for (uint256 i = 0; i < userStakes.length; i++) {
             if (
@@ -65,6 +76,7 @@ contract NFTStaking is
                 userStakes[i].unbondingStart == 0
             ) {
                 userStakes[i].unbondingStart = block.number;
+                activeStakeCount[msg.sender]--;
                 return;
             }
         }
@@ -92,31 +104,48 @@ contract NFTStaking is
         revert("Token not unstaking or already withdrawn");
     }
 
+    // New internal function to update rewards
+    function _updateRewards(address user) internal {
+        uint256 lastCalculation = lastRewardCalculation[user];
+        if (lastCalculation > 0 && activeStakeCount[user] > 0) {
+            uint256 blocksPassed = block.number - lastCalculation;
+            accumulatedRewards[user] +=
+                blocksPassed *
+                rewardPerBlock *
+                activeStakeCount[user];
+        }
+        lastRewardCalculation[user] = block.number;
+    }
+
+    // Optimized rewards calculation
+    function calculateRewards(address user) internal view returns (uint256) {
+        uint256 pendingRewards = accumulatedRewards[user];
+
+        // Add the rewarrds from previos calculation
+        if (activeStakeCount[user] > 0) {
+            uint256 blocksSinceLastCalculation = block.number -
+                lastRewardCalculation[user];
+            pendingRewards +=
+                blocksSinceLastCalculation *
+                rewardPerBlock *
+                activeStakeCount[user];
+        }
+
+        return pendingRewards;
+    }
+
     function claimRewards() external {
         require(
             block.number >= rewards[msg.sender] + delayPeriod,
             "Delay period not over"
         );
-        uint256 reward = calculateRewards(msg.sender);
-        rewards[msg.sender] = block.number;
-        _mint(msg.sender, reward);
-    }
 
-    function calculateRewards(address user) internal view returns (uint256) {
-        Stake[] storage userStakes = stakes[user];
-        uint256 totalReward = 0;
-        for (uint256 i = 0; i < userStakes.length; i++) {
-            if (userStakes[i].unbondingStart == 0) {
-                totalReward +=
-                    (block.number - userStakes[i].stakedAt) *
-                    rewardPerBlock;
-            } else {
-                totalReward +=
-                    (userStakes[i].unbondingStart - userStakes[i].stakedAt) *
-                    rewardPerBlock;
-            }
-        }
-        return totalReward;
+        _updateRewards(msg.sender);
+        uint256 reward = accumulatedRewards[msg.sender];
+        accumulatedRewards[msg.sender] = 0;
+        rewards[msg.sender] = block.number;
+
+        _mint(msg.sender, reward);
     }
 
     function updateRewardPerBlock(
